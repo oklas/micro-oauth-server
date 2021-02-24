@@ -3,54 +3,57 @@
  * Module dependencies.
  */
 
-var KoaOAuthServer = require('../../');
-var Request = require('oauth2-server').Request;
-var Response = require('oauth2-server').Response;
-var koa = require('koa');
-var request = require('co-supertest');
-var sinon = require('sinon');
+const MicroOAuthServer = require('../../');
+const should = require('should');
+const fetch = require('node-fetch');
+const Request = require('oauth2-server').Request;
+const Response = require('oauth2-server').Response;
+const listen = require('test-listen');
+const micro = require('micro')
+const {createError, json, send, sendError} = micro;
+const {getUrl} = require('../_test-utils')({micro, listen});
+const request = require('supertest');
+const sinon = require('sinon');
+const Router = require('micro-ex-router');
 
 /**
- * Test `KoaOAuthServer`.
+ * Test `MicroOAuthServer`.
  */
 
-describe('KoaOAuthServer', function() {
-  var app;
+describe('MicroOAuthServer', function() {
+ let app;
 
   beforeEach(function() {
-    app = koa();
+    app = Router();
   });
 
   describe('authenticate()', function() {
-    it('should call `authenticate()`', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should call `authenticate()`', async function() {
+      var oauth = new MicroOAuthServer({ model: {} });
+      await sinon.stub(oauth.server, 'authenticate').resolves({});
 
-      sinon.stub(oauth.server, 'authenticate').returns({});
+      const url = await listen(micro(app.get('/', oauth.authenticate())));
 
-      app.use(oauth.authenticate());
-
-      yield request(app.listen())
-        .get('/')
-        .end();
+      await request(url)
+        .get('/');
 
       oauth.server.authenticate.callCount.should.equal(1);
-      oauth.server.authenticate.firstCall.args.should.have.length(1);
+      oauth.server.authenticate.firstCall.args.length.should.equal(2);
       oauth.server.authenticate.firstCall.args[0].should.be.an.instanceOf(Request);
       oauth.server.authenticate.restore();
     });
   });
 
   describe('authorize()', function() {
-    it('should call `authorize()`', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should call `authorize()`', async function() {
+      var oauth = new MicroOAuthServer({ model: {} });
 
-      sinon.stub(oauth.server, 'authorize').returns({});
+      await sinon.stub(oauth.server, 'authorize').resolves({});
 
-      app.use(oauth.authorize());
+      const url = await listen(micro(app.get('/', oauth.authorize())));
 
-      yield request(app.listen())
-        .get('/')
-        .end();
+      await request(url)
+        .get('/');
 
       oauth.server.authorize.callCount.should.equal(1);
       oauth.server.authorize.firstCall.args.should.have.length(2);
@@ -61,16 +64,15 @@ describe('KoaOAuthServer', function() {
   });
 
   describe('token()', function() {
-    it('should call `token()`', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should call `token()`', async function() {
+      var oauth = new MicroOAuthServer({ model: {} });
 
-      sinon.stub(oauth.server, 'token').returns({});
+      await sinon.stub(oauth.server, 'token').resolves({});
 
-      app.use(oauth.token());
+      const url = await listen(micro(app.get('/', oauth.token())));
 
-      yield request(app.listen())
-        .get('/')
-        .end();
+      await request(url)
+        .get('/');
 
       oauth.server.token.callCount.should.equal(1);
       oauth.server.token.firstCall.args.should.have.length(2);

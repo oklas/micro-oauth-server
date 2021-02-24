@@ -3,31 +3,37 @@
  * Module dependencies.
  */
 
-var InvalidArgumentError = require('oauth2-server/lib/errors/invalid-argument-error');
-var KoaOAuthServer = require('../../');
-var NodeOAuthServer = require('oauth2-server');
-var bodyparser = require('koa-bodyparser');
-var koa = require('koa');
-var request = require('co-supertest');
-var should = require('should');
+
+const InvalidArgumentError = require('oauth2-server/lib/errors/invalid-argument-error');
+const MicroOAuthServer = require('../../');
+const NodeOAuthServer = require('oauth2-server');
+const should = require('should');
+const http = require('http');
+const fetch = require('node-fetch');
+const listen = require('test-listen');
+const micro = require('micro');
+const request = require('supertest');
+const sinon = require('sinon');
+const {createError, json, send, sendError} = micro;
+const {getUrl} = require('../_test-utils')({micro, listen});
+const Router = require('micro-ex-router');
+const {resolve} = require('path');
 
 /**
- * Test `KoaOAuthServer`.
+ * Test `MicroOAuthServer`.
  */
 
-describe('KoaOAuthServer', function() {
-  var app;
+describe('MicroOAuthServer', function() {
+  let app
 
   beforeEach(function() {
-    app = koa();
-
-    app.use(bodyparser());
+    app = Router();
   });
 
   describe('constructor()', function() {
     it('should throw an error if `model` is missing', function() {
       try {
-        new KoaOAuthServer({});
+        new MicroOAuthServer({});
 
         should.fail();
       } catch (e) {
@@ -38,12 +44,12 @@ describe('KoaOAuthServer', function() {
 
     it('should wrap generator functions in the model', function() {
       var model = {
-        getAccessToken: function *() {
+        getAccessToken: async function() {
           return 'foobar';
         }
       };
 
-      new KoaOAuthServer({ model: model });
+      new MicroOAuthServer({ model: model });
 
       model.getAccessToken().should.be.an.instanceOf(Promise);
 
@@ -55,68 +61,119 @@ describe('KoaOAuthServer', function() {
     });
 
     it('should set the `server`', function() {
-      var oauth = new KoaOAuthServer({ model: {} });
+      var oauth = new MicroOAuthServer({ model: {} });
 
       oauth.server.should.be.an.instanceOf(NodeOAuthServer);
     });
   });
 
   describe('authenticate()', function() {
-    it('should return an error if `model` is empty', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
-
-      app.use(oauth.authenticate());
-
-      yield request(app.listen())
+    it('should return an error if `model` is empty', async () => {
+      var oauth = new MicroOAuthServer({ model: {} });
+      const url = await getUrl(app.get('/', oauth.authenticate()));
+      return request(url)
         .get('/')
-        .expect({ error: 'invalid_argument', error_description: 'Invalid argument: model does not implement `getAccessToken()`' })
-        .end();
+        .expect(500)
+        .expect({
+          error: 'invalid_argument',
+          error_description: 'Invalid argument: model does not implement `getAccessToken()`'
+        });
     });
 
-    it('should emit an error if `model` is empty', function *(done) {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should authenticate the request', async function() {
+      var tokenExpires = new Date();
+      tokenExpires.setDate(tokenExpires.getDate() + 1);
 
-      app.use(oauth.authenticate());
+      var token = { user: {}, accessTokenExpiresAt: tokenExpires };
+      var model = {
+        getAccessToken: function() {
+          return token;
+        }
+      };
+      var oauth = new MicroOAuthServer({model});
 
-      app.on('error', function() {
-        done();
+      const url = await getUrl(
+        app
+          .use('/', oauth.authenticate())
+          .use((req,res)=>send(res, 200, ''))
+      );
+
+      request(url)
+        .get('/')
+        .set('Authorization', 'Bearer foobar')
+        .expect(200);
+    });
+
+    it('should cache the authorization token', async function() {
+      var tokenExpires = new Date()
+      tokenExpires.setDate(tokenExpires.getDate() + 1);
+      var token = { user: {}, accessTokenExpiresAt: tokenExpires };
+      var model = {
+        getAccessToken: function() {
+          return token;
+        }
+      };
+      var oauth = new MicroOAuthServer({ model });
+
+      var spy = sinon.spy(async function(req, res) {
+        res.locals.oauth.token.should.equal(token);
+        send(res, 200, token);
       });
 
-      yield request(app.listen())
+      const url = await getUrl(app.use('/', oauth.authenticate()).use(spy));
+
+      request(url)
         .get('/')
-        .end();
-    });
+        .set('Authorization', 'Bearer foobar')
+        .expect(200, function(err, res) {
+            spy.called.should.be.true;
+            err ? reject(err) : resolve();
+        });
+    });    
   });
 
   describe('authorize()', function() {
-    it('should return a `location` header with the error', function *() {
+    it('should cache the authorization code', async function() {
+      var tokenExpires = new Date();
+      tokenExpires.setDate(tokenExpires.getDate() + 1);
+
+      var code = { authorizationCode: 123 };
       var model = {
         getAccessToken: function() {
-          return { user: {} };
+          return { user: {}, accessTokenExpiresAt: tokenExpires };
         },
         getClient: function() {
           return { grants: ['authorization_code'], redirectUris: ['http://example.com'] };
         },
         saveAuthorizationCode: function() {
-          return {};
+          return code;
         }
       };
-      var oauth = new KoaOAuthServer({ model: model });
+      var oauth = new MicroOAuthServer({ model, continueMiddleware: true });
 
-      app.use(oauth.authorize());
+      var spy = sinon.spy(async function(req, res) {
+        const result = await oauth.authorize()(req, res)
+        res.locals.oauth.code.should.equal(code);
+        return result
+      });
+      const url = await getUrl(app.use(spy));
 
-      yield request(app.listen())
-        .post('/?state=foobiz')
-        .set('Authorization', 'Bearer foobar')
-        .send({ client_id: 12345 })
-        .expect('Location', 'http://example.com/?error=invalid_request&error_description=Missing%20parameter%3A%20%60response_type%60&state=foobiz')
-        .end();
+      return new Promise((resolve, reject) =>
+        request(url)
+          .post('/?state=foobiz')
+          .set('Authorization', 'Bearer foobar')
+          .send({client_id: 12345, response_type: 'code'})
+          .expect(302, function(err, res){
+              spy.called.should.be.true;
+              err ? reject(err) : resolve()
+          })
+      )
     });
 
-    it('should return a `location` header with the code', function *() {
+    it('should return an error', async function() {
       var model = {
         getAccessToken: function() {
-          return { user: {} };
+          return { user: {}, accessTokenExpiresAt: new Date() };
         },
         getClient: function() {
           return { grants: ['authorization_code'], redirectUris: ['http://example.com'] };
@@ -125,46 +182,82 @@ describe('KoaOAuthServer', function() {
           return { authorizationCode: 123 };
         }
       };
-      var oauth = new KoaOAuthServer({ model: model });
+      var oauth = new MicroOAuthServer({ model });
 
-      app.use(oauth.authorize());
+      const url = await getUrl(app.use('/', oauth.authorize()));
 
-      yield request(app.listen())
+      request(url)
+        .post('/?state=foobiz')
+        .set('Authorization', 'Bearer foobar')
+        .send({ client_id: 12345 })
+        .expect(400, {
+          error: 'invalid_request', 
+          error_description: 'Missing parameter: `response_type`'
+        });
+    });
+
+    it('should return a `location` header with the error', async () => {
+      var model = {
+        getAccessToken: function() {
+          return { user: {}, accessTokenExpiresAt: new Date() };
+        },
+        getClient: function() {
+          return { grants: ['authorization_code'], redirectUris: ['http://example.com'] };
+        },
+        saveAuthorizationCode: function() {
+          return { };
+        }
+      };
+      var oauth = new MicroOAuthServer({ model });
+
+      const url = await getUrl(app.use('/', oauth.authorize()));
+
+      request(url)
+        .post('/?state=foobiz')
+        .set('Authorization', 'Bearer foobar')
+        .send({ client_id: 12345 })
+        .expect('Location', 'http://example.com/?error=invalid_request&error_description=Missing%20parameter%3A%20%60response_type%60&state=foobiz')
+    });
+
+    it('should return a `location` header with the code', async function() {
+      var model = {
+        getAccessToken: function() {
+          return { user: {}, accessTokenExpiresAt: new Date()  };
+        },
+        getClient: function() {
+          return { grants: ['authorization_code'], redirectUris: ['http://example.com'] };
+        },
+        saveAuthorizationCode: function() {
+          return { authorizationCode: 123 };
+        }
+      };
+      var oauth = new MicroOAuthServer({ model });
+
+      const url = await getUrl(app.use('/', oauth.authorize()));
+
+      request(url)
         .post('/?state=foobiz')
         .set('Authorization', 'Bearer foobar')
         .send({ client_id: 12345, response_type: 'code' })
         .expect('Location', 'http://example.com/?code=123&state=foobiz')
-        .end();
     });
 
-    it('should return an error if `model` is empty', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should return an error if `model` is empty', async function() {
+      var oauth = new MicroOAuthServer({ model: {} });
 
-      app.use(oauth.authorize());
+      const url = await getUrl(app.use('/', oauth.authorize()));
 
-      yield request(app.listen())
+      request(url)
         .post('/')
-        .expect({ error: 'invalid_argument', error_description: 'Invalid argument: model does not implement `getClient()`' })
-        .end();
-    });
-
-    it('should emit an error if `model` is empty', function *(done) {
-      var oauth = new KoaOAuthServer({ model: {} });
-
-      app.use(oauth.authorize());
-
-      app.on('error', function() {
-        done();
-      });
-
-      yield request(app.listen())
-        .post('/')
-        .end();
+        .expect({
+          error: 'invalid_argument',
+          error_description: 'Invalid argument: model does not implement `getClient()`'
+        })
     });
   });
 
   describe('token()', function() {
-    it('should return an `access_token`', function *() {
+    it('should return an `access_token`', async function() {
       var model = {
         getClient: function() {
           return { grants: ['password'] };
@@ -176,18 +269,17 @@ describe('KoaOAuthServer', function() {
           return { accessToken: 'foobar', client: {}, user: {} };
         }
       };
-      var oauth = new KoaOAuthServer({ model: model });
+      var oauth = new MicroOAuthServer({ model: model });
 
-      app.use(oauth.token());
+      const url = await getUrl(app.use('/', oauth.token()));
 
-      yield request(app.listen())
+      request(url)
         .post('/')
         .send('client_id=foo&client_secret=bar&grant_type=password&username=qux&password=biz')
-        .expect({ access_token: 'foobar', token_type: 'bearer' })
-        .end();
+        .expect({ access_token: 'foobar', token_type: 'Bearer' });
     });
 
-    it('should return a `refresh_token`', function *() {
+    it('should return a `refresh_token`', async function() {
       var model = {
         getClient: function() {
           return { grants: ['password'] };
@@ -199,40 +291,27 @@ describe('KoaOAuthServer', function() {
           return { accessToken: 'foobar', client: {}, refreshToken: 'foobiz', user: {} };
         }
       };
-      var oauth = new KoaOAuthServer({ model: model });
+      var oauth = new MicroOAuthServer({ model: model });
 
-      app.use(oauth.token());
+      const url = await getUrl(app.use('/', oauth.token()));
 
-      yield request(app.listen())
+      request(url)
         .post('/')
         .send('client_id=foo&client_secret=bar&grant_type=password&username=qux&password=biz')
-        .expect({ access_token: 'foobar', refresh_token: 'foobiz', token_type: 'bearer' })
-        .end();
+        .expect({ access_token: 'foobar', refresh_token: 'foobiz', token_type: 'Bearer' })
     });
 
-    it('should return an error if `model` is empty', function *() {
-      var oauth = new KoaOAuthServer({ model: {} });
+    it('should return an error if `model` is empty', async function() {
+      var oauth = new MicroOAuthServer({ model: {} });
 
-      app.use(oauth.token());
+      const url = await getUrl(app.use('/', oauth.token()));
 
-      yield request(app.listen())
+      request(url)
         .post('/')
-        .expect({ error: 'invalid_argument', error_description: 'Invalid argument: model does not implement `getClient()`' })
-        .end();
-    });
-
-    it('should emit an error if `model` is empty', function *(done) {
-      var oauth = new KoaOAuthServer({ model: {} });
-
-      app.use(oauth.token());
-
-      app.on('error', function() {
-        done();
-      });
-
-      yield request(app.listen())
-        .post('/')
-        .end();
+        .expect({
+          error: 'invalid_argument',
+          error_description: 'Invalid argument: model does not implement `getClient()`'
+        });
     });
   });
 });
