@@ -1,14 +1,14 @@
 {
-  "name": "koa-oauth-server",
-  "description": "OAuth provider for koa",
-  "version": "2.0.0",
+  "name": "micro-oauth-server",
+  "description": "OAuth provider for micro",
+  "version": "1.0.0",
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git://github.com/thomseddon/koa-oauth-server"
+    "url": "git://github.com/oklas/micro-oauth-server"
   },
   "keywords": [
-    "koa",
+    "micro",
     "oauth",
     "oauth2"
   ],
