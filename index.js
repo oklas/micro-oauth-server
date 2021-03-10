@@ -23,6 +23,7 @@ function MicroOAuthServer(options) {
   }
 
   for (var fn in options.model) {
+    if(fn.match(/^_/)) continue;
     options.model[fn] = co.wrap(options.model[fn]);
   }
 
