@@ -38,7 +38,7 @@ function MicroOAuthServer(options) {
  * (See: https://tools.ietf.org/html/rfc6749#section-7)
  */
 
-MicroOAuthServer.prototype.authenticate = function() {
+MicroOAuthServer.prototype.authenticate = function(options) {
   var server = this.server;
 
   return async function(req, res) {
@@ -48,7 +48,7 @@ MicroOAuthServer.prototype.authenticate = function() {
     try {
       if(!res.locals) res.locals = {}
       res.locals.oauth = {
-        token: await server.authenticate(request, response)
+        token: await server.authenticate(request, response, options)
       };
     } catch (e) {
       return handleError.call(this, e, req, res);
@@ -64,7 +64,7 @@ MicroOAuthServer.prototype.authenticate = function() {
  * (See: https://tools.ietf.org/html/rfc6749#section-3.1)
  */
 
-MicroOAuthServer.prototype.authorize = function() {
+MicroOAuthServer.prototype.authorize = function(options) {
   var server = this.server;
 
   return async function(req, res) {
@@ -74,7 +74,7 @@ MicroOAuthServer.prototype.authorize = function() {
     try {
       if(!res.locals) res.locals = {}
       res.locals.oauth = {
-        code: await server.authorize(request, response)
+        code: await server.authorize(request, response, options)
       };
       return handleResponse.call(this, req, res, response);
     } catch (e) {
@@ -91,7 +91,7 @@ MicroOAuthServer.prototype.authorize = function() {
  * (See: https://tools.ietf.org/html/rfc6749#section-3.2)
  */
 
-MicroOAuthServer.prototype.token = function() {
+MicroOAuthServer.prototype.token = function(options) {
   var server = this.server;
 
   return async function(req, res) {
@@ -101,7 +101,7 @@ MicroOAuthServer.prototype.token = function() {
     try {
       if(!res.locals) res.locals = {}
       res.locals.oauth = {
-        token: await server.token(request, response)
+        token: await server.token(request, response, options)
       };
 
       handleResponse.call(this, req, res, response);
